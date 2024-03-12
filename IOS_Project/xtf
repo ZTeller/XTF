@@ -1,0 +1,217 @@
+#!/bin/bash               
+# xtellez00 / Zdenek Teller
+# 9.3.2024
+
+
+export POSIXLY_CORRECT=yes
+export LC_ALL=C
+
+OPTSTRING=":a:b:c:"
+COMMAND="none"
+
+display_help() {
+    echo "Usage: xtf [-h|--help] [COMMAND][FILTER] USER LOG [LOG2 [...]]"
+    echo "DOPLNIT"
+}
+
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            display_help
+            exit 0
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+#FILTER OPTIONS
+NUM_OF_FILTERS=0
+CURRENCY=""
+AFTER_DATE=""
+BEFORE_DATE=""
+OPTS=""
+while getopts ${OPTSTRING} opt; do
+  case ${opt} in
+    a)
+      #echo "Option -a was triggered, Argument: ${OPTARG}"
+      if [[ ! $OPTARG =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}$ ]]; then
+        echo "Invalid date"
+        exit 1
+      fi
+      AFTER_DATE=$OPTARG
+      OPTS+=$opt
+      ((NUM_OF_FILTERS++))
+      ;;
+    b)
+      #echo "Option -b was triggered, Argument: ${OPTARG}"
+      if [[ ! $OPTARG =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}$ ]]; then
+        echo "Invalid date"
+        exit 1
+      fi
+      BEFORE_DATE=$OPTARG
+      OPTS+=$opt
+      ((NUM_OF_FILTERS++))
+      ;;
+    c)
+      #echo "Option -c was triggered, Argument: ${OPTARG}"
+      if [[ ! $OPTARG =~ ^[A-Z]{3}$ ]]; then
+        echo "Invalid currency"
+        exit 1
+      fi
+      CURRENCY=$OPTARG
+      OPTS+=$opt
+      ((NUM_OF_FILTERS++))
+      ;;
+    :)
+      echo "Option -${OPTARG} requires an argument."
+      exit 1
+      ;;
+    ?)
+      echo "Invalid option: -${OPTARG}."
+      exit 1
+      ;;
+  esac
+done
+
+for ((i=0; i<NUM_OF_FILTERS; i++))
+do
+    shift
+    shift
+done
+
+# Handle remaining arguments
+if [[ $# -lt 2 ]]; then
+    #echo "Error: Not enough arguments!"
+    #display_help
+    exit 1
+fi
+
+NUM_OF_COMMANDS=0
+while [[ $# -ge 2 ]]; do
+    if [[ $1 == "list" || $1 == "list-currency" || $1 = "status" || $1 == "profit" ]]; then
+        COMMAND=$1
+        ((NUM_OF_COMMANDS++))
+        if [[ $NUM_OF_COMMANDS -gt 1 ]]; then
+            #echo "Multiple commands entered"
+            exit 1
+        fi
+        shift
+    else
+        if [[ $COMMAND == "none" ]]; then
+            COMMAND="list"
+        fi
+        break
+    fi
+done
+#echo $COMMAND
+
+
+if [[ $1 != "" && $1 != *".log"* ]]; then
+    USER=$1
+    shift
+else
+    #echo "No user selected"
+    exit 1
+fi
+
+#echo "User: $USER"
+
+if [[ $# -lt 0 ]]; then
+    #echo "No log"
+    exit 1
+fi
+
+
+
+ARRAY=("")
+
+
+# Process LOGs
+while [[ $# -gt 0 ]]; do
+    LOG="$1"
+    if [[ $LOG =~ \.log$ || $LOG =~ \.log.gz$ ]]; then
+        #echo "Processing LOG: $LOG"
+        while IFS= read -r line; do
+        ARRAY+=("$line")
+        done < "$LOG"
+    else 
+        #echo "Wrong log type"
+        exit 1
+    fi
+    shift
+done
+
+for index in "${!ARRAY[@]}"; do
+    val="${ARRAY[$index]}"
+    if [ -n "$val" ]; then  # Check if the element is not empty
+        # Apply AWK based on the USER
+        val=$(echo "$val" | awk -v username="$USER" 'BEGIN{FS=";"} {if($1==username) print $0}')
+
+        # Apply AWK based on the CURRENCY (if defined)
+        if [ -n "$CURRENCY" ]; then
+            val=$(echo "$val" | awk -v currency="$CURRENCY" 'BEGIN{FS=";"} {if($3==currency) print $0}')
+        fi
+
+        if [ -n "$BEFORE_DATE" ]; then
+            val=$(echo "$val" | awk -v date="$BEFORE_DATE" 'BEGIN{FS=";"} {if($2<date) print $0}')
+        fi
+
+        if [ -n "$AFTER_DATE" ]; then
+            val=$(echo "$val" | awk -v date="$AFTER_DATE" 'BEGIN{FS=";"} {if($2>date) print $0}')
+        fi
+
+        # Update the element in the ARRAY
+        ARRAY[index]="$val"
+    fi
+done
+
+
+#echo "Contents of the array:"
+if [[ $COMMAND == "list" ]]; then
+    for element in "${ARRAY[@]}"; do
+        if [[ $element != "" ]]; then
+            echo "$element"
+        fi
+    done
+fi
+if [[ $COMMAND == "list-currency" ]]; then
+    for index in "${!ARRAY[@]}"; do
+    element="${ARRAY[$index]}"
+        if [[ $element != "" ]]; then
+            # Execute AWK command to print the third field
+            #echo "$element"
+            val=$(awk 'BEGIN{FS=";"} {print $3}' <<< "$element")
+            #echo $valS
+            ARRAY[index]="$val"
+            #echo "$ARRAY[$index]"
+        fi
+    done
+
+    #declare -A new_array=()  # Declare new_array as an associative array
+
+
+    # Iterate over the indices of ARRAY to find unique elements
+    INDEX=0
+    for element in "${ARRAY[@]}"; do
+        found=0
+        #echo "$element"
+        for value in "${new_array[@]}"; do
+            if [[ "$value" =~ $element ]]; then
+                found=1
+            fi
+        done
+        if [[ $found != 1 && $element != "" ]]; then
+            new_array[INDEX]=$element
+            ((INDEX++))
+        fi
+
+    done
+    sorted_array=($(printf "%s\n" "${new_array[@]}" | sort))
+    # Print the unique elements from new_array
+    for element in "${sorted_array[@]}"; do
+        echo "$element"
+    done
+fi
