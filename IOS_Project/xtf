@@ -8,6 +8,7 @@ export LC_ALL=C
 
 OPTSTRING=":a:b:c:"
 COMMAND="none"
+XTF_PROFIT="${XTF_PROFIT:-20}"
 
 display_help() {
     echo "Usage: xtf [-h|--help] [COMMAND][FILTER] USER LOG [LOG2 [...]]"
@@ -33,14 +34,20 @@ CURRENCY=""
 AFTER_DATE=""
 BEFORE_DATE=""
 OPTS=""
+AFTER_FLAG=0
+BEFORE_FLAG=0
 while getopts ${OPTSTRING} opt; do
   case ${opt} in
     a)
       #echo "Option -a was triggered, Argument: ${OPTARG}"
       if [[ ! $OPTARG =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}$ ]]; then
-        echo "Invalid date"
+        #echo "Invalid date"
         exit 1
       fi
+      if [[ $AFTER_FLAG == 1 ]]; then
+                exit 1
+        fi
+        AFTER_FLAG=1
       AFTER_DATE=$OPTARG
       OPTS+=$opt
       ((NUM_OF_FILTERS++))
@@ -48,9 +55,13 @@ while getopts ${OPTSTRING} opt; do
     b)
       #echo "Option -b was triggered, Argument: ${OPTARG}"
       if [[ ! $OPTARG =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}$ ]]; then
-        echo "Invalid date"
+        #echo "Invalid date"
         exit 1
       fi
+      if [[ $BEFORE_FLAG == 1 ]]; then
+            exit 1
+        fi
+        BEFORE_FLAG=1
       BEFORE_DATE=$OPTARG
       OPTS+=$opt
       ((NUM_OF_FILTERS++))
@@ -58,7 +69,7 @@ while getopts ${OPTSTRING} opt; do
     c)
       #echo "Option -c was triggered, Argument: ${OPTARG}"
       if [[ ! $OPTARG =~ ^[A-Z]{3}$ ]]; then
-        echo "Invalid currency"
+        #echo "Invalid currency"
         exit 1
       fi
       CURRENCY=$OPTARG
@@ -132,17 +143,32 @@ ARRAY=("")
 # Process LOGs
 while [[ $# -gt 0 ]]; do
     LOG="$1"
-    if [[ $LOG =~ \.log$ || $LOG =~ \.log.gz$ ]]; then
+    if [[ $LOG =~ \.log$ ]]; then
         #echo "Processing LOG: $LOG"
         while IFS= read -r line; do
-        ARRAY+=("$line")
+            if [[ $line =~ ^.+\;[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\;[A-Z]{3}\;[-]?[0-9]+\.[0-9]{4} ]]; then
+                ARRAY+=("$line")
+            else
+                #echo "Invalid line in $LOG: $line" >&2
+                exit 1
+            fi
         done < "$LOG"
+    elif [[ $LOG =~ \.log.gz$ ]]; then 
+        while IFS= read -r line; do
+            if [[ $line =~ ^.+\;[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\;[A-Z]{3}\;[-]?[0-9]+\.[0-9]{4} ]]; then
+                ARRAY+=("$line")
+            else
+                #echo "Invalid line in $LOG: $line" >&2
+                exit 1
+            fi
+        done < <(zcat "$LOG")
     else 
         #echo "Wrong log type"
         exit 1
     fi
     shift
 done
+
 
 for index in "${!ARRAY[@]}"; do
     val="${ARRAY[$index]}"
@@ -155,6 +181,11 @@ for index in "${!ARRAY[@]}"; do
             val=$(echo "$val" | awk -v currency="$CURRENCY" 'BEGIN{FS=";"} {if($3==currency) print $0}')
         fi
 
+        if [[ -n "$BEFORE_DATE" && -n "$AFTER_DATE" ]]; then
+            if [[ $AFTER_DATE > $BEFORE_DATE ]]; then
+                exit 1
+            fi
+        fi
         if [ -n "$BEFORE_DATE" ]; then
             val=$(echo "$val" | awk -v date="$BEFORE_DATE" 'BEGIN{FS=";"} {if($2<date) print $0}')
         fi
@@ -167,7 +198,7 @@ for index in "${!ARRAY[@]}"; do
         ARRAY[index]="$val"
     fi
 done
-
+ARRAY2=("${ARRAY[@]}")
 
 #echo "Contents of the array:"
 if [[ $COMMAND == "list" ]]; then
@@ -177,7 +208,7 @@ if [[ $COMMAND == "list" ]]; then
         fi
     done
 fi
-if [[ $COMMAND == "list-currency" ]]; then
+if [[ $COMMAND == "list-currency"  || $COMMAND == "status" || $COMMAND == "profit" ]]; then
     for index in "${!ARRAY[@]}"; do
     element="${ARRAY[$index]}"
         if [[ $element != "" ]]; then
@@ -210,8 +241,54 @@ if [[ $COMMAND == "list-currency" ]]; then
 
     done
     sorted_array=($(printf "%s\n" "${new_array[@]}" | sort))
+
+    if [[ $COMMAND == "list-currency" ]]; then
     # Print the unique elements from new_array
+        for element in "${sorted_array[@]}"; do
+            echo "$element"
+        done
+        exit 0
+    fi
+
+    declare -A output
+
+    declare -A output
+
     for element in "${sorted_array[@]}"; do
-        echo "$element"
+        for element2 in "${ARRAY2[@]}"; do
+            if [[ $element != "" ]]; then
+                num=$(awk -v currency="$element" 'BEGIN{FS=";"} {if($3==currency) print $4}' <<< "$element2")
+                #echo "$num"
+                # Check if the value already exists in the associative array
+                if [[ ${output["$element"]} ]]; then
+                    # Concatenate the values and use awk for arithmetic
+                    output["$element"]=$(awk -v val1="${output["$element"]}" -v val2="$num" 'BEGIN { printf "%.4f", val1 + val2 }')
+                else
+                    # Set the value to num if it doesn't exist
+                    output["$element"]=$num
+                fi
+            fi
+        done
     done
+
+    if [[ $COMMAND == "status" ]]; then
+        for key in "${!output[@]}"; do
+            # Format the output to have 4 decimal places
+            formatted_value=$(printf "%.4f" "${output[$key]}")
+            echo "$key : $formatted_value"
+        done
+    fi
+    if [[ $COMMAND == "profit" ]]; then
+        for key in "${!output[@]}"; do
+            # Format the output to have 4 decimal places
+            if ! [[ $key == "EUR" || $key == "USD" ]]; then
+                value=$(awk -v val="${output[$key]}" -v percent="$XTF_PROFIT" 'BEGIN { printf "%.4f", val * (1 + percent * 0.01) }')
+            else   
+                value=$(awk -v val="${output[$key]}" 'BEGIN { printf "%.4f", val }')
+            fi
+            #formatted_value=$(printf "%.4f" "$value")
+            echo "$key : $value"
+        done
+    fi
+    
 fi
